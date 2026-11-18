@@ -1,0 +1,397 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function perfilPath(uid) {
+      return /databases/$(database)/documents/usuarios/$(uid);
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(perfilPath(request.auth.uid))
+        && get(perfilPath(request.auth.uid)).data.rol == 'administrador'
+        && get(perfilPath(request.auth.uid)).data.activo == true;
+    }
+
+    function mesaPath(mesaId) {
+      return /databases/$(database)/documents/mesas/$(mesaId);
+    }
+
+    function atencionPath(atencionId) {
+      return /databases/$(database)/documents/atenciones/$(atencionId);
+    }
+
+    function pedidoPath(atencionId, pedidoId) {
+      return /databases/$(database)/documents/atenciones/$(atencionId)/pedidos/$(pedidoId);
+    }
+
+    function pagoPath(atencionId, pagoId) {
+      return /databases/$(database)/documents/atenciones/$(atencionId)/pagos/$(pagoId);
+    }
+
+    function atencionPagadaCerrada(atencionId) {
+      let atencion = get(atencionPath(atencionId)).data;
+      let pago = get(pagoPath(atencionId, atencion.pagoId)).data;
+      return atencion.estado == 'cerrada'
+        && atencion.pagoId is string
+        && atencion.metodoPago in ['efectivo', 'yape']
+        && atencion.totalPagadoCentimos is int
+        && atencion.totalPagadoCentimos == atencionCentimos(atencion)
+        && pago.importeCentimos == atencion.totalPagadoCentimos
+        && pago.metodo == atencion.metodoPago;
+    }
+
+    function mesaDespues(mesaId) {
+      return getAfter(mesaPath(mesaId));
+    }
+
+    function atencionDespues(atencionId) {
+      return getAfter(atencionPath(atencionId));
+    }
+
+    function pedidoDespues(atencionId, pedidoId) {
+      return getAfter(pedidoPath(atencionId, pedidoId));
+    }
+
+    // Legacy catalog records have only `precio` in soles. Their cents value is
+    // derived for reads and order validation; nothing is migrated by this rule.
+    function precioCatalogoCentimos(producto) {
+      return producto.keys().hasAny(['precioCentimos'])
+        ? producto.precioCentimos
+        : int(producto.precio * 100 + 0.5000001);
+    }
+
+    function lineaValida(item) {
+      let producto = getAfter(
+        /databases/$(database)/documents/productos/$(item.productoId)
+      ).data;
+      let precioCentimos = precioCatalogoCentimos(producto);
+      return item is map
+        // Exactly five keys plus the checks below means all required keys are
+        // present and no unvalidated fields can be smuggled into a line.
+        && item.keys().size() == 5
+        && item.productoId is string
+        && producto.activo == true
+        && item.nombre == producto.nombre
+        && precioCentimos is int
+        && precioCentimos >= 0
+        && precioCentimos <= 10000000000
+        && item.precioUnitarioCentimos is int
+        && item.precioUnitarioCentimos == precioCentimos
+        && item.cantidad is int
+        && item.cantidad >= 1
+        && item.cantidad <= 1000000
+        && item.subtotalCentimos is int
+        && item.subtotalCentimos == precioCentimos * item.cantidad;
+    }
+
+    // Requiring sorted IDs proves uniqueness with one comparison per neighbor.
+    function lineasOrdenadas(items) {
+      return (items.size() < 2 || items[0].productoId < items[1].productoId)
+        && (items.size() < 3 || items[1].productoId < items[2].productoId)
+        && (items.size() < 4 || items[2].productoId < items[3].productoId);
+    }
+
+    function lineasValidas(items) {
+      return items is list
+        && items.size() >= 1
+        && items.size() <= 4
+        && lineaValida(items[0])
+        && (items.size() < 2 || lineaValida(items[1]))
+        && (items.size() < 3 || lineaValida(items[2]))
+        && (items.size() < 4 || lineaValida(items[3]))
+        && lineasOrdenadas(items);
+    }
+
+    function totalLineasCentimos(items) {
+      return items[0].subtotalCentimos
+        + (items.size() > 1 ? items[1].subtotalCentimos : 0)
+        + (items.size() > 2 ? items[2].subtotalCentimos : 0)
+        + (items.size() > 3 ? items[3].subtotalCentimos : 0);
+    }
+
+    function atencionCentimos(data) {
+      return data.keys().hasAny(['totalCentimos'])
+        ? data.totalCentimos
+        : int(data.total * 100 + 0.5000001);
+    }
+
+    function productoValido(data) {
+      return data.keys().hasAll(['nombre', 'categoria', 'precio', 'precioCentimos', 'activo'])
+        && data.keys().hasOnly(['nombre', 'categoria', 'precio', 'precioCentimos', 'activo'])
+        && data.nombre is string
+        && data.nombre.size() > 0
+        && data.nombre.size() <= 100
+        && data.categoria is string
+        && data.categoria.size() > 0
+        && data.categoria.size() <= 60
+        && data.precio is number
+        && data.precio >= 0
+        && data.precioCentimos is int
+        && data.precioCentimos >= 0
+        && data.precioCentimos <= 10000000000
+        && data.precio == data.precioCentimos / 100
+        && data.activo is bool;
+    }
+
+    function pedidoCreateValido(data, atencionId, pedidoId) {
+      let actual = get(atencionPath(atencionId)).data;
+      let despues = atencionDespues(atencionId).data;
+      let mesa = mesaDespues(data.mesaId).data;
+      let totalAnterior = atencionCentimos(actual);
+      return actual.estado == 'abierta'
+        && totalAnterior is int
+        && totalAnterior <= 9000000000000000000 - data.totalCentimos
+        && actual.mesaId == data.mesaId
+        && actual.mesaNumero == data.mesaNumero
+        && despues.estado == 'abierta'
+        && despues.mesaId == data.mesaId
+        && despues.mesaNumero == data.mesaNumero
+        && despues.ultimoPedidoId == pedidoId
+        && despues.totalCentimos == totalAnterior + data.totalCentimos
+        && despues.total == despues.totalCentimos / 100
+        && mesa.estado == 'ocupada'
+        && mesa.atencionActivaId == atencionId
+        && mesa.numero == data.mesaNumero;
+    }
+
+    function atencionActualizacionValida(atencionId) {
+      let pedido = pedidoDespues(atencionId, request.resource.data.ultimoPedidoId).data;
+      let mesa = mesaDespues(resource.data.mesaId).data;
+      let totalAnterior = atencionCentimos(resource.data);
+      return pedido.totalCentimos is int
+        && totalAnterior is int
+        && totalAnterior <= 9000000000000000000 - pedido.totalCentimos
+        && pedido.atencionId == atencionId
+        && pedido.mesaId == resource.data.mesaId
+        && pedido.mesaNumero == resource.data.mesaNumero
+        && pedido.creadoPor == request.auth.uid
+        && pedido.estado == 'recibido'
+        && pedido.creadoEn == request.time
+        && request.resource.data.totalCentimos == totalAnterior + pedido.totalCentimos
+        && pedido.total == pedido.totalCentimos / 100
+        && pedido.items is list
+        && pedido.items.size() >= 1
+        && pedido.items.size() <= 4
+        && mesa.estado == 'ocupada'
+        && mesa.atencionActivaId == atencionId
+        && mesa.numero == resource.data.mesaNumero;
+    }
+
+    function cierreAtencionValido(atencionId) {
+      let pago = getAfter(pagoPath(atencionId, request.resource.data.pagoId)).data;
+      let mesa = getAfter(mesaPath(resource.data.mesaId)).data;
+      let saldo = atencionCentimos(resource.data);
+      return request.resource.data.estado == 'cerrada'
+        && request.resource.data.cierre == request.time
+        && request.resource.data.metodoPago in ['efectivo', 'yape']
+        && request.resource.data.pagoId is string
+        && request.resource.data.totalPagadoCentimos is int
+        && saldo is int
+        && request.resource.data.totalPagadoCentimos == saldo
+        && pago.metodo == request.resource.data.metodoPago
+        && pago.importeCentimos == saldo
+        && pago.importe == saldo / 100
+        && pago.registradoEn == request.time
+        && pago.confirmadoPor == request.auth.uid
+        && mesa.estado == 'libre'
+        && mesa.atencionActivaId == null;
+    }
+
+    function pagoValido(atencionId, pagoId) {
+      let actual = get(atencionPath(atencionId)).data;
+      let despues = atencionDespues(atencionId).data;
+      let mesa = mesaDespues(actual.mesaId).data;
+      let saldo = atencionCentimos(actual);
+      return actual.estado == 'abierta'
+        && actual.mesaId is string
+        && saldo is int
+        && saldo >= 0
+        && request.resource.data.keys().hasAll([
+          'metodo', 'importeCentimos', 'importe', 'registradoEn', 'confirmadoPor'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'metodo', 'importeCentimos', 'importe', 'registradoEn', 'confirmadoPor'
+        ])
+        && request.resource.data.metodo in ['efectivo', 'yape']
+        && request.resource.data.importeCentimos is int
+        && request.resource.data.importeCentimos == saldo
+        && request.resource.data.importe == saldo / 100
+        && request.resource.data.registradoEn == request.time
+        && request.resource.data.confirmadoPor == request.auth.uid
+        && despues.estado == 'cerrada'
+        && despues.cierre == request.time
+        && despues.metodoPago == request.resource.data.metodo
+        && despues.pagoId == pagoId
+        && despues.totalPagadoCentimos == saldo
+        && mesa.estado == 'libre'
+        && mesa.atencionActivaId == null;
+    }
+
+    function mesaLiberadaValida(mesaId) {
+      let atencionId = resource.data.atencionActivaId;
+      let antes = get(atencionPath(atencionId)).data;
+      let despues = getAfter(atencionPath(atencionId)).data;
+      return resource.data.estado == 'ocupada'
+        && atencionId is string
+        && request.resource.data.estado == 'libre'
+        && request.resource.data.atencionActivaId == null
+        && request.resource.data.mozoId == null
+        && request.resource.data.mozoNombre == null
+        && request.resource.data.comensales == null
+        && request.resource.data.inicioAtencion == null
+        && antes.mesaId == mesaId
+        && despues.estado == 'cerrada'
+        && despues.cierre == request.time
+        && despues.pagoId is string;
+    }
+
+    match /usuarios/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create, update, delete: if false;
+    }
+
+    match /mesas/{mesaId} {
+      allow read: if isAdmin();
+
+      allow update: if isAdmin() && (
+        (resource.data.estado == 'libre'
+          && request.resource.data.estado == 'ocupada'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'estado', 'atencionActivaId', 'mozoId', 'mozoNombre', 'comensales', 'inicioAtencion'
+          ])
+          && request.resource.data.atencionActivaId is string
+          && request.resource.data.mozoId == request.auth.uid
+          && request.resource.data.mozoNombre is string
+          && request.resource.data.comensales is int
+          && request.resource.data.comensales >= 1
+          && request.resource.data.inicioAtencion == request.time
+          && atencionDespues(request.resource.data.atencionActivaId).data.mesaId == mesaId
+          && atencionDespues(request.resource.data.atencionActivaId).data.mesaNumero == request.resource.data.numero
+          && atencionDespues(request.resource.data.atencionActivaId).data.mozoId == request.auth.uid
+          && atencionDespues(request.resource.data.atencionActivaId).data.mozoNombre == request.resource.data.mozoNombre
+          && atencionDespues(request.resource.data.atencionActivaId).data.comensales == request.resource.data.comensales
+          && atencionDespues(request.resource.data.atencionActivaId).data.estado == 'abierta'
+          && atencionDespues(request.resource.data.atencionActivaId).data.inicio == request.time)
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'estado', 'atencionActivaId', 'mozoId', 'mozoNombre', 'comensales', 'inicioAtencion'
+        ]) && mesaLiberadaValida(mesaId))
+      );
+
+      allow create, delete: if false;
+    }
+
+    match /atenciones/{atencionId} {
+      allow get: if isAdmin();
+      allow list: if false;
+
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasAll([
+          'mesaId', 'mesaNumero', 'mozoId', 'mozoNombre', 'comensales', 'estado',
+          'inicio', 'cierre', 'total', 'totalCentimos'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'mesaId', 'mesaNumero', 'mozoId', 'mozoNombre', 'comensales', 'estado',
+          'inicio', 'cierre', 'total', 'totalCentimos'
+        ])
+        && request.resource.data.mesaId is string
+        && request.resource.data.mesaNumero is number
+        && request.resource.data.mozoId == request.auth.uid
+        && request.resource.data.mozoNombre is string
+        && request.resource.data.comensales is int
+        && request.resource.data.comensales >= 1
+        && request.resource.data.estado == 'abierta'
+        && request.resource.data.inicio == request.time
+        && request.resource.data.cierre == null
+        && request.resource.data.total == 0
+        && request.resource.data.totalCentimos == 0
+        && mesaDespues(request.resource.data.mesaId).data.estado == 'ocupada'
+        && mesaDespues(request.resource.data.mesaId).data.atencionActivaId == atencionId
+        && mesaDespues(request.resource.data.mesaId).data.numero == request.resource.data.mesaNumero
+        && mesaDespues(request.resource.data.mesaId).data.mozoId == request.auth.uid
+        && mesaDespues(request.resource.data.mesaId).data.mozoNombre == request.resource.data.mozoNombre
+        && mesaDespues(request.resource.data.mesaId).data.comensales == request.resource.data.comensales
+        && mesaDespues(request.resource.data.mesaId).data.inicioAtencion == request.time;
+
+      allow update: if isAdmin()
+        && ((resource.data.estado == 'abierta'
+          && request.resource.data.estado == 'abierta'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'total', 'totalCentimos', 'ultimoPedidoId'
+          ])
+          && request.resource.data.totalCentimos is int
+          && request.resource.data.totalCentimos >= atencionCentimos(resource.data)
+          && request.resource.data.total == request.resource.data.totalCentimos / 100
+          && request.resource.data.ultimoPedidoId is string
+          && atencionActualizacionValida(atencionId))
+        || (resource.data.estado == 'abierta'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'estado', 'cierre', 'metodoPago', 'pagoId', 'totalPagadoCentimos'
+          ])
+          && cierreAtencionValido(atencionId)));
+
+      allow delete: if false;
+
+      match /pedidos/{pedidoId} {
+        allow get: if isAdmin();
+        allow list: if isAdmin() && atencionPagadaCerrada(atencionId);
+
+        allow create: if isAdmin()
+          && request.resource.data.keys().hasAll([
+            'atencionId', 'mesaId', 'mesaNumero', 'creadoPor', 'creadoEn',
+            'estado', 'items', 'total', 'totalCentimos'
+          ])
+          && request.resource.data.keys().hasOnly([
+            'atencionId', 'mesaId', 'mesaNumero', 'creadoPor', 'creadoEn',
+            'estado', 'items', 'total', 'totalCentimos'
+          ])
+          && request.resource.data.atencionId == atencionId
+          && request.resource.data.mesaId is string
+          && request.resource.data.mesaNumero is number
+          && request.resource.data.creadoPor == request.auth.uid
+          && request.resource.data.creadoEn == request.time
+          && request.resource.data.estado == 'recibido'
+          && lineasValidas(request.resource.data.items)
+          && request.resource.data.totalCentimos is int
+          && request.resource.data.totalCentimos == totalLineasCentimos(request.resource.data.items)
+          && request.resource.data.total == request.resource.data.totalCentimos / 100
+          && pedidoCreateValido(request.resource.data, atencionId, pedidoId);
+
+        allow update, delete: if false;
+      }
+    }
+
+    match /productos/{productoId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() && productoValido(request.resource.data);
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'nombre', 'categoria', 'precio', 'precioCentimos', 'activo'
+        ])
+        && productoValido(request.resource.data);
+      allow delete: if false;
+    }
+
+    match /atenciones/{atencionId}/pagos/{pagoId} {
+      allow get: if isAdmin();
+      allow list: if isAdmin()
+        && request.query.limit != null
+        && request.query.limit <= 50;
+      allow create: if isAdmin() && pagoValido(atencionId, pagoId);
+      allow update, delete: if false;
+    }
+
+    // Collection-group reads are scoped to pagos below atenciones and limited
+    // to active administrators. Writes remain governed by the exact rule above.
+    match /{path=**}/pagos/{pagoId} {
+      allow list: if isAdmin()
+        && request.query.limit != null
+        && request.query.limit <= 50;
+      allow create, update, delete: if false;
+    }
+  }
+}
