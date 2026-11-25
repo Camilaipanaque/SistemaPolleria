@@ -5,6 +5,7 @@ import GestionPedidos from './GestionPedidos'
 import GestionProductos from './GestionProductos'
 import GestionPagos from './GestionPagos'
 import ReportesVentas from './ReportesVentas'
+import PanelCocina from './PanelCocina'
 import './PanelAdmin.css'
 
 type PanelAdminProps = {
@@ -119,6 +120,15 @@ function PanelAdmin({ usuarioId, nombreUsuario, onCerrarSesion }: PanelAdminProp
     )
   }
 
+  if (seccion === 'cocina') {
+    return <PanelCocina
+      usuarioId={usuarioId}
+      nombreUsuario={nombreUsuario}
+      puedeEntregar
+      onVolver={() => setSeccion('inicio')}
+    />
+  }
+
   return (
     <div className="panel-admin">
       <header className="panel-header">
@@ -146,6 +156,9 @@ function PanelAdmin({ usuarioId, nombreUsuario, onCerrarSesion }: PanelAdminProp
             </button>
             <button type="button" onClick={() => setSeccion('pedidos')}>
               📝 Pedidos
+            </button>
+            <button type="button" onClick={() => setSeccion('cocina')}>
+              🍳 Cocina
             </button>
             <button type="button" onClick={() => setSeccion('caja')}>💰 Caja</button>
             <button type="button" onClick={() => setSeccion('reportes')}>📊 Reportes</button>

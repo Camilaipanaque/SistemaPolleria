@@ -1,19 +1,18 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import {
-  addDoc,
   collection,
-  doc,
   onSnapshot,
   orderBy,
   query,
-  updateDoc,
 } from 'firebase/firestore'
 import { auth, db } from '../firebase'
+import { guardarProductoUnico, ProductoDuplicadoError } from './productosUtils'
 
 type Producto = {
   id: string
   nombre: string
   categoria: string
+  presentacion?: string
   precio: number
   precioCentimos?: number
   activo: boolean
@@ -26,8 +25,15 @@ type GestionProductosProps = {
 const formularioInicial = {
   nombre: '',
   categoria: '',
+  presentacion: '',
   precio: '',
   activo: true,
+}
+
+const categorias = ['Pollos', 'Acompañamientos', 'Bebidas frías', 'Bebidas calientes']
+const presentacionesRapidas: Record<string, string[]> = {
+  Pollos: ['1/8', '1/4', '1/2', 'Entero'],
+  'Bebidas frías': ['500 ml', '1 litro', '1.5 litros', '2 litros'],
 }
 
 function GestionProductos({ usuarioId }: GestionProductosProps) {
@@ -80,6 +86,7 @@ function GestionProductos({ usuarioId }: GestionProductosProps) {
     setFormulario({
       nombre: producto.nombre,
       categoria: producto.categoria,
+      presentacion: producto.presentacion ?? '',
       precio: ((producto.precioCentimos ?? Math.round(producto.precio * 100)) / 100).toFixed(2),
       activo: producto.activo,
     })
@@ -96,13 +103,27 @@ function GestionProductos({ usuarioId }: GestionProductosProps) {
       setError('La sesión actual no corresponde al usuario autenticado.')
       return
     }
+    if (cargando) {
+      setError('Espera a que termine de cargar el catálogo antes de guardar.')
+      return
+    }
 
     const nombre = formulario.nombre.trim()
     const categoria = formulario.categoria.trim()
+    const presentacion = formulario.presentacion.trim()
     const precio = Number(formulario.precio)
 
     if (!nombre || !categoria) {
       setError('Ingresa el nombre y la categoría del producto.')
+      return
+    }
+
+    if ((categoria === 'Bebidas frías' || categoria === 'Bebidas calientes') && !presentacion) {
+      setError('Ingresa la presentación de la bebida, por ejemplo 500 ml, botella o taza.')
+      return
+    }
+    if (presentacion.length > 60) {
+      setError('La presentación no puede superar 60 caracteres.')
       return
     }
 
@@ -119,21 +140,24 @@ function GestionProductos({ usuarioId }: GestionProductosProps) {
 
     setGuardando(true)
     try {
-      const datos = { nombre, categoria, precio: precioCentimos / 100, precioCentimos, activo: formulario.activo }
-
-      if (productoEditando) {
-        await updateDoc(doc(db, 'productos', productoEditando), datos)
-        setMensaje('Producto actualizado.')
-      } else {
-        await addDoc(collection(db, 'productos'), datos)
-        setMensaje('Producto registrado.')
+      const datos: Omit<Producto, 'id' | 'precio'> & { precio: number } = {
+        nombre,
+        categoria,
+        precio: precioCentimos / 100,
+        precioCentimos,
+        activo: formulario.activo,
       }
+      if (presentacion) datos.presentacion = presentacion
+      await guardarProductoUnico(db, datos, productos, productoEditando ?? undefined)
+      setMensaje(productoEditando ? 'Producto actualizado.' : 'Producto registrado.')
 
       setProductoEditando(null)
       setFormulario(formularioInicial)
     } catch (err) {
       console.error('Error al guardar producto:', err)
-      setError('No se pudo guardar el producto. Revisa los permisos de Firestore.')
+      setError(err instanceof ProductoDuplicadoError
+        ? err.message
+        : 'No se pudo guardar el producto. Revisa los permisos de Firestore y vuelve a intentarlo.')
     } finally {
       setGuardando(false)
     }
@@ -166,12 +190,34 @@ function GestionProductos({ usuarioId }: GestionProductosProps) {
 
         <label>
           Categoría
-          <input
+          <select
             value={formulario.categoria}
             onChange={(evento) => setFormulario({ ...formulario, categoria: evento.target.value })}
-            maxLength={60}
             required
+          >
+            <option value="">Selecciona una categoría</option>
+            {categorias.map((categoria) => <option key={categoria} value={categoria}>{categoria}</option>)}
+            {formulario.categoria && !categorias.includes(formulario.categoria) && (
+              <option value={formulario.categoria}>{formulario.categoria} (existente)</option>
+            )}
+          </select>
+        </label>
+
+        <label>
+          Presentación
+          <input
+            value={formulario.presentacion}
+            onChange={(evento) => setFormulario({ ...formulario, presentacion: evento.target.value })}
+            maxLength={60}
+            list="presentaciones-rapidas"
+            placeholder="Elige una opción o escribe otra"
           />
+          <datalist id="presentaciones-rapidas">
+            {(presentacionesRapidas[formulario.categoria] ?? []).map((presentacion) => (
+              <option key={presentacion} value={presentacion} />
+            ))}
+          </datalist>
+          <small>Las presentaciones distintas se registran como productos separados y pueden tener precios propios.</small>
         </label>
 
         <label>
@@ -219,7 +265,7 @@ function GestionProductos({ usuarioId }: GestionProductosProps) {
             <table className="productos-tabla">
               <thead>
                 <tr>
-                  <th>Nombre</th>
+                  <th>Producto</th>
                   <th>Categoría</th>
                   <th>Precio</th>
                   <th>Estado</th>
@@ -229,7 +275,10 @@ function GestionProductos({ usuarioId }: GestionProductosProps) {
               <tbody>
                 {productos.map((producto) => (
                   <tr key={producto.id}>
-                    <td>{producto.nombre}</td>
+                    <td>
+                      <strong>{producto.nombre}</strong>
+                      <small className="producto-presentacion">{producto.presentacion || 'Sin presentación'}</small>
+                    </td>
                     <td>{producto.categoria}</td>
                     <td>S/ {((producto.precioCentimos ?? Math.round(producto.precio * 100)) / 100).toFixed(2)}</td>
                     <td>{producto.activo ? 'Activo' : 'Inactivo'}</td>

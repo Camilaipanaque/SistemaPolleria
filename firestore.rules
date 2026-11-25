@@ -10,15 +10,29 @@ service cloud.firestore {
       return /databases/$(database)/documents/usuarios/$(uid);
     }
 
+    function perfilActivoConRol(rol) {
+      let perfil = get(perfilPath(request.auth.uid)).data;
+      return perfil.rol == rol && perfil.activo == true;
+    }
+
     function isAdmin() {
-      return signedIn()
-        && exists(perfilPath(request.auth.uid))
-        && get(perfilPath(request.auth.uid)).data.rol == 'administrador'
-        && get(perfilPath(request.auth.uid)).data.activo == true;
+      return signedIn() && perfilActivoConRol('administrador');
+    }
+
+    function isCocina() {
+      return signedIn() && perfilActivoConRol('cocina');
+    }
+
+    function isMozo() {
+      return signedIn() && perfilActivoConRol('mozo');
     }
 
     function mesaPath(mesaId) {
       return /databases/$(database)/documents/mesas/$(mesaId);
+    }
+
+    function productoPath(productoId) {
+      return /databases/$(database)/documents/productos/$(productoId);
     }
 
     function atencionPath(atencionId) {
@@ -27,6 +41,92 @@ service cloud.firestore {
 
     function pedidoPath(atencionId, pedidoId) {
       return /databases/$(database)/documents/atenciones/$(atencionId)/pedidos/$(pedidoId);
+    }
+
+    function comandaPath(atencionId, pedidoId) {
+      return /databases/$(database)/documents/atenciones/$(atencionId)/pedidos/$(pedidoId)/cocina/resumen;
+    }
+
+    function transicionPermitidaPorRol(anterior, siguiente) {
+      return ((isAdmin() || isCocina())
+          && ((anterior == 'recibido' && siguiente == 'preparando')
+            || (anterior == 'preparando' && siguiente == 'listo')))
+        || ((isAdmin() || isMozo()) && anterior == 'listo' && siguiente == 'entregado');
+    }
+
+    function itemComandaValido(item) {
+      return item is map
+        && item.keys().hasOnly(['productoId', 'nombre', 'presentacion', 'cantidad', 'observacion'])
+        && item.productoId is string
+        && item.nombre is string
+        && item.nombre.size() > 0
+        && item.nombre.size() <= 100
+        && item.cantidad is int
+        && item.cantidad >= 1
+        && item.cantidad <= 1000000
+        && (!item.keys().hasAny(['presentacion'])
+          || (item.presentacion is string && item.presentacion.size() > 0 && item.presentacion.size() <= 60))
+        && (!item.keys().hasAny(['observacion'])
+          || (item.observacion is string && item.observacion.size() <= 300));
+    }
+
+    function comandaValida(data) {
+      return data is map
+        && data.keys().hasAll([
+          'atencionId', 'pedidoId', 'mesaId', 'mesaNumero', 'creadoPor',
+          'creadoEn', 'estado', 'items'
+        ])
+        && data.keys().hasOnly([
+          'atencionId', 'pedidoId', 'mesaId', 'mesaNumero', 'creadoPor',
+          'creadoEn', 'estado', 'items', 'observaciones'
+        ])
+        && data.atencionId is string
+        && data.pedidoId is string
+        && data.mesaId is string
+        && data.mesaNumero is number
+        && data.creadoPor is string
+        && data.creadoEn is timestamp
+        && data.estado in ['recibido', 'preparando', 'listo', 'entregado']
+        && data.items is list
+        && data.items.size() >= 1
+        && data.items.size() <= 4
+        && itemComandaValido(data.items[0])
+        && (data.items.size() < 2 || itemComandaValido(data.items[1]))
+        && (data.items.size() < 3 || itemComandaValido(data.items[2]))
+        && (data.items.size() < 4 || itemComandaValido(data.items[3]))
+        && (!data.keys().hasAny(['observaciones'])
+          || (data.observaciones is string && data.observaciones.size() <= 500));
+    }
+
+    function comandaCreateValida(atencionId, pedidoId) {
+      let pedido = getAfter(pedidoPath(atencionId, pedidoId)).data;
+      return comandaValida(request.resource.data)
+        && request.resource.data.atencionId == atencionId
+        && request.resource.data.pedidoId == pedidoId
+        && request.resource.data.estado == 'recibido'
+        && request.resource.data.atencionId == pedido.atencionId
+        && request.resource.data.mesaId == pedido.mesaId
+        && request.resource.data.mesaNumero == pedido.mesaNumero
+        && request.resource.data.creadoPor == pedido.creadoPor
+        && request.resource.data.creadoEn == pedido.creadoEn
+        && pedido.estado == 'recibido';
+    }
+
+    function estadoPedidoActualizacionValida(atencionId, pedidoId) {
+      let comanda = getAfter(comandaPath(atencionId, pedidoId)).data;
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estado'])
+        && transicionPermitidaPorRol(resource.data.estado, request.resource.data.estado)
+        && get(comandaPath(atencionId, pedidoId)).data.estado == resource.data.estado
+        && comanda.estado == request.resource.data.estado
+        && comanda.pedidoId == pedidoId;
+    }
+
+    function estadoComandaActualizacionValida(atencionId, pedidoId) {
+      let pedido = getAfter(pedidoPath(atencionId, pedidoId)).data;
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estado'])
+        && transicionPermitidaPorRol(resource.data.estado, request.resource.data.estado)
+        && get(pedidoPath(atencionId, pedidoId)).data.estado == resource.data.estado
+        && pedido.estado == request.resource.data.estado;
     }
 
     function pagoPath(atencionId, pagoId) {
@@ -71,12 +171,15 @@ service cloud.firestore {
       ).data;
       let precioCentimos = precioCatalogoCentimos(producto);
       return item is map
-        // Exactly five keys plus the checks below means all required keys are
-        // present and no unvalidated fields can be smuggled into a line.
-        && item.keys().size() == 5
         && item.productoId is string
         && producto.activo == true
         && item.nombre == producto.nombre
+        && item.keys().hasOnly([
+          'productoId', 'nombre', 'presentacion', 'precioUnitarioCentimos', 'cantidad', 'subtotalCentimos'
+        ])
+        && (producto.keys().hasAny(['presentacion'])
+          ? item.presentacion == producto.presentacion
+          : !item.keys().hasAny(['presentacion']))
         && precioCentimos is int
         && precioCentimos >= 0
         && precioCentimos <= 10000000000
@@ -122,7 +225,9 @@ service cloud.firestore {
 
     function productoValido(data) {
       return data.keys().hasAll(['nombre', 'categoria', 'precio', 'precioCentimos', 'activo'])
-        && data.keys().hasOnly(['nombre', 'categoria', 'precio', 'precioCentimos', 'activo'])
+        && data.keys().hasOnly([
+          'nombre', 'categoria', 'precio', 'precioCentimos', 'activo', 'presentacion'
+        ])
         && data.nombre is string
         && data.nombre.size() > 0
         && data.nombre.size() <= 100
@@ -135,7 +240,13 @@ service cloud.firestore {
         && data.precioCentimos >= 0
         && data.precioCentimos <= 10000000000
         && data.precio == data.precioCentimos / 100
-        && data.activo is bool;
+        && data.activo is bool
+        && (!data.keys().hasAny(['presentacion'])
+          || (data.presentacion is string
+            && data.presentacion.size() > 0
+            && data.presentacion.size() <= 60))
+        && (!(data.categoria in ['Bebidas frías', 'Bebidas calientes'])
+          || data.keys().hasAny(['presentacion']));
     }
 
     function pedidoCreateValido(data, atencionId, pedidoId) {
@@ -145,14 +256,15 @@ service cloud.firestore {
       let totalAnterior = atencionCentimos(actual);
       return actual.estado == 'abierta'
         && totalAnterior is int
-        && totalAnterior <= 9000000000000000000 - data.totalCentimos
         && actual.mesaId == data.mesaId
         && actual.mesaNumero == data.mesaNumero
         && despues.estado == 'abierta'
         && despues.mesaId == data.mesaId
         && despues.mesaNumero == data.mesaNumero
         && despues.ultimoPedidoId == pedidoId
-        && despues.totalCentimos == totalAnterior + data.totalCentimos
+        && despues.totalCentimos is int
+        && despues.totalCentimos > totalAnterior
+        && despues.totalCentimos <= 9000000000000000000
         && despues.total == despues.totalCentimos / 100
         && mesa.estado == 'ocupada'
         && mesa.atencionActivaId == atencionId
@@ -160,23 +272,14 @@ service cloud.firestore {
     }
 
     function atencionActualizacionValida(atencionId) {
-      let pedido = pedidoDespues(atencionId, request.resource.data.ultimoPedidoId).data;
       let mesa = mesaDespues(resource.data.mesaId).data;
       let totalAnterior = atencionCentimos(resource.data);
-      return pedido.totalCentimos is int
-        && totalAnterior is int
-        && totalAnterior <= 9000000000000000000 - pedido.totalCentimos
-        && pedido.atencionId == atencionId
-        && pedido.mesaId == resource.data.mesaId
-        && pedido.mesaNumero == resource.data.mesaNumero
-        && pedido.creadoPor == request.auth.uid
-        && pedido.estado == 'recibido'
-        && pedido.creadoEn == request.time
-        && request.resource.data.totalCentimos == totalAnterior + pedido.totalCentimos
-        && pedido.total == pedido.totalCentimos / 100
-        && pedido.items is list
-        && pedido.items.size() >= 1
-        && pedido.items.size() <= 4
+      let pedido = getAfter(pedidoPath(atencionId, request.resource.data.ultimoPedidoId)).data;
+      let totalPedido = pedido.totalCentimos;
+      return totalAnterior is int
+        && totalPedido is int
+        && totalAnterior <= 9000000000000000000 - totalPedido
+        && request.resource.data.totalCentimos == totalAnterior + totalPedido
         && mesa.estado == 'ocupada'
         && mesa.atencionActivaId == atencionId
         && mesa.numero == resource.data.mesaNumero;
@@ -341,13 +444,9 @@ service cloud.firestore {
         allow list: if isAdmin() && atencionPagadaCerrada(atencionId);
 
         allow create: if isAdmin()
-          && request.resource.data.keys().hasAll([
-            'atencionId', 'mesaId', 'mesaNumero', 'creadoPor', 'creadoEn',
-            'estado', 'items', 'total', 'totalCentimos'
-          ])
           && request.resource.data.keys().hasOnly([
             'atencionId', 'mesaId', 'mesaNumero', 'creadoPor', 'creadoEn',
-            'estado', 'items', 'total', 'totalCentimos'
+            'estado', 'items', 'total', 'totalCentimos', 'observaciones'
           ])
           && request.resource.data.atencionId == atencionId
           && request.resource.data.mesaId is string
@@ -359,10 +458,47 @@ service cloud.firestore {
           && request.resource.data.totalCentimos is int
           && request.resource.data.totalCentimos == totalLineasCentimos(request.resource.data.items)
           && request.resource.data.total == request.resource.data.totalCentimos / 100
+          && (!request.resource.data.keys().hasAny(['observaciones'])
+            || (request.resource.data.observaciones is string
+              && request.resource.data.observaciones.size() > 0
+              && request.resource.data.observaciones.size() <= 500))
           && pedidoCreateValido(request.resource.data, atencionId, pedidoId);
 
-        allow update, delete: if false;
+        allow update: if (isAdmin() || isCocina() || isMozo())
+          && estadoPedidoActualizacionValida(atencionId, pedidoId);
+        allow delete: if false;
+
+        match /cocina/{comandaId} {
+          allow get: if ((isAdmin() || isCocina()) && comandaValida(resource.data))
+            || (isMozo() && comandaValida(resource.data) && resource.data.estado == 'listo');
+          allow list: if ((isAdmin() || isCocina())
+            && request.query.limit != null
+            && request.query.limit <= 200
+            && resource.data.estado in ['recibido', 'preparando', 'listo'])
+            || (isMozo() && request.query.limit != null
+              && request.query.limit <= 200 && resource.data.estado == 'listo');
+          allow create: if isAdmin()
+            && comandaId == 'resumen'
+            && comandaCreateValida(atencionId, pedidoId);
+          allow update: if (isAdmin() || isCocina() || isMozo())
+            && estadoComandaActualizacionValida(atencionId, pedidoId);
+          allow delete: if false;
+        }
       }
+    }
+
+    // Collection-group reads return only price-free kitchen summaries; full
+    // order documents remain unreadable to kitchen and waiter roles.
+    match /{path=**}/cocina/{comandaId} {
+      allow get: if ((isAdmin() || isCocina()) && comandaValida(resource.data))
+        || (isMozo() && comandaValida(resource.data) && resource.data.estado == 'listo');
+      allow list: if ((isAdmin() || isCocina())
+        && request.query.limit != null
+        && request.query.limit <= 200
+        && resource.data.estado in ['recibido', 'preparando', 'listo'])
+        || (isMozo() && request.query.limit != null
+          && request.query.limit <= 200 && resource.data.estado == 'listo');
+      allow create, update, delete: if false;
     }
 
     match /productos/{productoId} {
@@ -370,10 +506,37 @@ service cloud.firestore {
       allow create: if isAdmin() && productoValido(request.resource.data);
       allow update: if isAdmin()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'nombre', 'categoria', 'precio', 'precioCentimos', 'activo'
+          'nombre', 'categoria', 'precio', 'precioCentimos', 'activo', 'presentacion'
         ])
         && productoValido(request.resource.data);
       allow delete: if false;
+    }
+
+    // Private reservation records prevent concurrent catalog writes from
+    // claiming the same normalized name/category/presentation combination.
+    match /clavesProductos/{claveId} {
+      allow get: if isAdmin();
+      allow list: if false;
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasAll(['productoId', 'claveNormalizada'])
+        && request.resource.data.keys().hasOnly(['productoId', 'claveNormalizada'])
+        && request.resource.data.productoId is string
+        && request.resource.data.claveNormalizada is string
+        && request.resource.data.claveNormalizada.size() > 0
+        && request.resource.data.claveNormalizada.size() <= 512
+        && existsAfter(productoPath(request.resource.data.productoId));
+      allow update: if isAdmin()
+        && resource.data.productoId == request.resource.data.productoId
+        && request.resource.data.keys().hasAll(['productoId', 'claveNormalizada'])
+        && request.resource.data.keys().hasOnly(['productoId', 'claveNormalizada'])
+        && request.resource.data.productoId is string
+        && request.resource.data.claveNormalizada is string
+        && request.resource.data.claveNormalizada.size() > 0
+        && request.resource.data.claveNormalizada.size() <= 512
+        && existsAfter(productoPath(request.resource.data.productoId));
+      allow delete: if isAdmin()
+        && resource.data.productoId is string
+        && existsAfter(productoPath(resource.data.productoId));
     }
 
     match /atenciones/{atencionId}/pagos/{pagoId} {

@@ -5,7 +5,7 @@ import { imprimirConFormato, validarVenta } from './reportesVentasUtils'
 import './TicketVenta.css'
 
 type Props = { atencionId: string; onCerrar: () => void }
-type Linea = { nombre: string; cantidad: number; precioUnitarioCentimos: number; subtotalCentimos: number }
+type Linea = { nombre: string; presentacion?: string; cantidad: number; precioUnitarioCentimos: number; subtotalCentimos: number }
 type DatosTicket = { atencionId: string; mesaNumero: number; pagoFecha: Date; metodo: string; totalCentimos: number; lineas: Linea[] }
 
 function TicketVenta({ atencionId, onCerrar }: Props) {
@@ -63,7 +63,7 @@ function TicketVenta({ atencionId, onCerrar }: Props) {
         <div className="ticket-meta"><span>Atención: {ticket.atencionId}</span><span>Mesa: {ticket.mesaNumero}</span>
           <span>Pago: {ticket.pagoFecha.toLocaleString('es-PE')}</span></div>
         <table><thead><tr><th>Producto</th><th>Cant.</th><th>P. unit.</th><th>Subtotal</th></tr></thead>
-          <tbody>{ticket.lineas.map((l, i) => <tr key={`${l.nombre}-${i}`}><td>{l.nombre}</td><td>{l.cantidad}</td><td>{dinero(l.precioUnitarioCentimos)}</td><td>{dinero(l.subtotalCentimos)}</td></tr>)}</tbody>
+          <tbody>{ticket.lineas.map((l, i) => <tr key={`${l.nombre}-${i}`}><td>{l.nombre}{l.presentacion && <small className="ticket-presentacion">{l.presentacion}</small>}</td><td>{l.cantidad}</td><td>{dinero(l.precioUnitarioCentimos)}</td><td>{dinero(l.subtotalCentimos)}</td></tr>)}</tbody>
         </table>
         <div className="ticket-total"><span>TOTAL</span><strong>{dinero(ticket.totalCentimos)}</strong></div>
         <p className="ticket-metodo">Método de pago: <strong>{ticket.metodo === 'yape' ? 'Yape' : 'Efectivo'}</strong></p>

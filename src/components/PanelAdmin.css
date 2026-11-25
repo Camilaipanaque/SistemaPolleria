@@ -202,7 +202,20 @@
   color: #e5e1f1;
 }
 
-.producto-formulario input:not([type='checkbox']) {
+.producto-formulario label > small,
+.producto-presentacion {
+  display: block;
+  margin-top: 4px;
+  color: #c5c3d2;
+  font-size: 12px;
+}
+
+.producto-presentacion {
+  color: #c4b5fd;
+}
+
+.producto-formulario input:not([type='checkbox']),
+.producto-formulario select {
   width: 100%;
   box-sizing: border-box;
   padding: 11px 12px;
@@ -330,6 +343,9 @@
   color: #c4b5fd;
 }
 
+.pedido-categoria { margin-top: 18px; }
+.pedido-categoria h4 { margin: 0; padding: 8px 0; color: #c4b5fd; border-bottom: 1px solid #5b5275; }
+
 .pedido-producto,
 .pedido-linea {
   display: flex;
@@ -375,6 +391,9 @@
 .pedido-linea input {
   width: 76px;
 }
+
+.pedido-observaciones { display: grid; gap: 7px; margin-top: 16px; color: #e5e1f1; }
+.pedido-observaciones textarea { min-height: 72px; resize: vertical; padding: 10px; border: 1px solid #5b5275; border-radius: 8px; font: inherit; }
 
 .pedido-linea .pedido-quitar {
   color: #fff;

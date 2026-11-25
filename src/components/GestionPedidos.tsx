@@ -22,6 +22,7 @@ type Producto = {
   id: string
   nombre: string
   categoria: string
+  presentacion?: string
   precio?: number
   precioCentimos?: number
   activo: boolean
@@ -62,12 +63,16 @@ function GestionPedidos({ usuarioId }: GestionPedidosProps) {
   const [atencionCargadaId, setAtencionCargadaId] = useState('')
   const [mesaSeleccionadaId, setMesaSeleccionadaId] = useState('')
   const [cantidades, setCantidades] = useState<Record<string, number>>({})
+  const [observaciones, setObservaciones] = useState('')
   const [cargandoMesas, setCargandoMesas] = useState(true)
   const [cargandoProductos, setCargandoProductos] = useState(true)
   const [guardando, setGuardando] = useState(false)
   const [error, setError] = useState('')
   const [mensaje, setMensaje] = useState('')
-  const pedidoPendiente = useRef<{ clave: string; referencia: ReturnType<typeof doc> } | null>(null)
+  const pedidoPendiente = useRef<{
+    clave: string
+    referencias: Array<ReturnType<typeof doc>>
+  } | null>(null)
 
   useEffect(() => {
     const consulta = query(collection(db, 'mesas'), where('estado', '==', 'ocupada'))
@@ -122,6 +127,21 @@ function GestionPedidos({ usuarioId }: GestionPedidosProps) {
   const mesaSeleccionada = mesas.find((mesa) => mesa.id === mesaSeleccionadaId)
   const atencionActivaId = mesaSeleccionada?.atencionActivaId || ''
   const atencionVisible = atencionCargadaId === atencionActivaId ? atencion : null
+
+  const productosPorCategoria = useMemo(() => {
+    const orden = ['Pollos', 'Acompañamientos', 'Bebidas frías', 'Bebidas calientes']
+    const grupos = new Map<string, Producto[]>()
+    for (const producto of productos) {
+      const grupo = grupos.get(producto.categoria) ?? []
+      grupo.push(producto)
+      grupos.set(producto.categoria, grupo)
+    }
+    return [...grupos.entries()].sort(([a], [b]) => {
+      const ia = orden.indexOf(a), ib = orden.indexOf(b)
+      if (ia >= 0 || ib >= 0) return (ia < 0 ? orden.length : ia) - (ib < 0 ? orden.length : ib)
+      return a.localeCompare(b, 'es')
+    })
+  }, [productos])
 
   useEffect(() => {
     if (!atencionActivaId) return
@@ -188,6 +208,7 @@ function GestionPedidos({ usuarioId }: GestionPedidosProps) {
   function cambiarMesa(mesaId: string) {
     setMesaSeleccionadaId(mesaId)
     setCantidades({})
+    setObservaciones('')
     pedidoPendiente.current = null
     setAtencion(null)
     setError('')
@@ -211,7 +232,7 @@ function GestionPedidos({ usuarioId }: GestionPedidosProps) {
       return
     }
     if (lineas.length > 4) {
-      setError('Un pedido puede contener como máximo cuatro productos distintos por los límites de validación de Firestore.')
+      setError('Un pedido puede contener como máximo cuatro productos distintos.')
       return
     }
     if (lineas.some((linea) => !Number.isSafeInteger(linea.cantidad) || linea.cantidad < 1 || linea.cantidad > 1000000)) {
@@ -222,20 +243,26 @@ function GestionPedidos({ usuarioId }: GestionPedidosProps) {
       setError('Uno o más productos del pedido dejaron de estar activos. Quítalos antes de continuar.')
       return
     }
+    if (observaciones.trim().length > 500) {
+      setError('Las observaciones no pueden superar 500 caracteres.')
+      return
+    }
 
     const clave = JSON.stringify({
       mesaId: mesaSeleccionada.id,
       atencionId: atencionActivaId,
       lineas: lineas.map(({ producto, cantidad }) => [producto.id, cantidad]).sort(([a], [b]) => String(a).localeCompare(String(b))),
+      observaciones: observaciones.trim(),
     })
     if (!pedidoPendiente.current || pedidoPendiente.current.clave !== clave) {
+      const referencias = [doc(collection(db, 'atenciones', atencionActivaId, 'pedidos'))]
       pedidoPendiente.current = {
         clave,
-        referencia: doc(collection(db, 'atenciones', atencionActivaId, 'pedidos')),
+        referencias,
       }
     }
 
-    const pedidoRef = pedidoPendiente.current.referencia
+    const pedidoRefs = pedidoPendiente.current.referencias
     const mesaId = mesaSeleccionada.id
     const uid = usuarioId
     const cantidadesPedido = Object.fromEntries(lineas.map(({ producto, cantidad }) => [producto.id, cantidad]))
@@ -245,21 +272,26 @@ function GestionPedidos({ usuarioId }: GestionPedidosProps) {
       const resultado = await runTransaction<ResultadoPedido>(db, async (transaccion) => {
         const mesaRef = doc(db, 'mesas', mesaId)
         const atencionRef = doc(db, 'atenciones', atencionActivaId)
-        const [mesaDoc, atencionDoc, pedidoDoc] = await Promise.all([
+        const [mesaDoc, atencionDoc, pedidoDocs] = await Promise.all([
           transaccion.get(mesaRef),
           transaccion.get(atencionRef),
-          transaccion.get(pedidoRef),
+          Promise.all(pedidoRefs.map((pedidoRef) => transaccion.get(pedidoRef))),
         ])
 
-        if (pedidoDoc.exists()) {
-          const pedidoExistente = pedidoDoc.data()
-          if (pedidoExistente.atencionId !== atencionActivaId || pedidoExistente.mesaId !== mesaId) {
-            throw new Error('El identificador pendiente ya está asociado a otro pedido.')
+        const existentes = pedidoDocs.filter((pedidoDoc) => pedidoDoc.exists())
+        if (existentes.length > 0) {
+          if (existentes.length !== pedidoRefs.length || !atencionDoc.exists()) {
+            throw new Error('El grupo de pedidos quedó incompleto. No se modificó la atención; vuelve a cargarla.')
           }
+          const datosExistentes = existentes.map((pedidoDoc) => pedidoDoc.data())
+          if (datosExistentes.some((pedidoExistente) =>
+            pedidoExistente.atencionId !== atencionActivaId
+            || pedidoExistente.mesaId !== mesaId,
+          )) throw new Error('El identificador pendiente ya está asociado a otro pedido.')
           return {
             repetido: true,
-            totalPedido: Number(pedidoExistente.total),
-              totalAtencion: Number(atencionDoc.data()?.total ?? atencionVisible?.total ?? 0),
+            totalPedido: datosExistentes.reduce((suma, pedidoExistente) => suma + Number(pedidoExistente.total), 0),
+            totalAtencion: Number(atencionDoc.data()?.total ?? atencionVisible?.total ?? 0),
           }
         }
 
@@ -307,13 +339,17 @@ function GestionPedidos({ usuarioId }: GestionPedidosProps) {
           return {
             productoId,
             nombre: producto.nombre,
+            ...(typeof producto.presentacion === 'string' && producto.presentacion.trim()
+              ? { presentacion: producto.presentacion }
+              : {}),
             precioUnitarioCentimos,
             cantidad,
             subtotalCentimos,
           }
         })
 
-        const totalCentimosPedido = items.reduce((suma, item) => suma + item.subtotalCentimos, 0)
+        const itemsOrdenados = items.sort((a, b) => a.productoId.localeCompare(b.productoId))
+        const totalCentimosPedido = itemsOrdenados.reduce((suma, item) => suma + item.subtotalCentimos, 0)
         if (!Number.isSafeInteger(totalCentimosPedido)) {
           throw new Error('El total del pedido supera el monto admitido.')
         }
@@ -326,22 +362,43 @@ function GestionPedidos({ usuarioId }: GestionPedidosProps) {
           throw new Error('El total acumulado de la atención no es válido.')
         }
         const nuevoTotal = nuevoTotalCentimos / 100
+        const observacionPedido = observaciones.trim()
 
-        transaccion.set(pedidoRef, {
-          atencionId: atencionActivaId,
-          mesaId,
-          mesaNumero: mesaActual.numero,
-          creadoPor: uid,
-          creadoEn: serverTimestamp(),
-          estado: 'recibido',
-          items,
-          total: totalPedido,
-          totalCentimos: totalCentimosPedido,
-        })
+        for (const pedidoRef of pedidoRefs) {
+          transaccion.set(pedidoRef, {
+            atencionId: atencionActivaId,
+            mesaId,
+            mesaNumero: mesaActual.numero,
+            creadoPor: uid,
+            creadoEn: serverTimestamp(),
+            estado: 'recibido',
+            items: itemsOrdenados,
+            ...(observacionPedido ? { observaciones: observacionPedido } : {}),
+            total: totalPedido,
+            totalCentimos: totalCentimosPedido,
+          })
+          const resumenCocinaRef = doc(db, 'atenciones', atencionActivaId, 'pedidos', pedidoRef.id, 'cocina', 'resumen')
+          transaccion.set(resumenCocinaRef, {
+            atencionId: atencionActivaId,
+            pedidoId: pedidoRef.id,
+            mesaId,
+            mesaNumero: mesaActual.numero,
+            creadoPor: uid,
+            creadoEn: serverTimestamp(),
+            estado: 'recibido',
+            items: itemsOrdenados.map((item) => ({
+              productoId: item.productoId,
+              nombre: item.nombre,
+              ...(item.presentacion ? { presentacion: item.presentacion } : {}),
+              cantidad: item.cantidad,
+            })),
+            ...(observacionPedido ? { observaciones: observacionPedido } : {}),
+          })
+        }
         transaccion.update(atencionRef, {
           total: nuevoTotal,
           totalCentimos: nuevoTotalCentimos,
-          ultimoPedidoId: pedidoRef.id,
+          ultimoPedidoId: pedidoRefs[pedidoRefs.length - 1].id,
         })
 
         return { repetido: false, totalPedido, totalAtencion: nuevoTotal }
@@ -349,6 +406,7 @@ function GestionPedidos({ usuarioId }: GestionPedidosProps) {
 
       pedidoPendiente.current = null
       setCantidades({})
+      setObservaciones('')
       setMensaje(
         resultado.repetido
           ? `Este pedido ya estaba guardado (${soles(resultado.totalPedido)}). Total de atención: ${soles(resultado.totalAtencion)}.`
@@ -410,20 +468,25 @@ function GestionPedidos({ usuarioId }: GestionPedidosProps) {
           <h3>Productos activos</h3>
           {cargandoProductos && <p>Cargando productos…</p>}
           {!cargandoProductos && productos.length === 0 && <p>No hay productos activos en el catálogo.</p>}
-          {productos.map((producto) => (
-            <article className="pedido-producto" key={producto.id}>
-              <div>
-                <strong>{producto.nombre}</strong>
-              <span>{producto.categoria} · {soles(centimosProducto(producto) / 100)}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => cambiarCantidad(producto.id, (cantidades[producto.id] ?? 0) + 1)}
-                disabled={guardando || !mesaSeleccionada || !atencion}
-              >
-                Agregar
-              </button>
-            </article>
+          {productosPorCategoria.map(([categoria, items]) => (
+            <section className="pedido-categoria" key={categoria}>
+              <h4>{categoria}</h4>
+              {items.map((producto) => (
+                <article className="pedido-producto" key={producto.id}>
+                  <div>
+                    <strong>{producto.nombre}</strong>
+                    <span>{producto.presentacion ? `Presentación: ${producto.presentacion} · ` : 'Sin presentación · '}{soles(centimosProducto(producto) / 100)}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => cambiarCantidad(producto.id, (cantidades[producto.id] ?? 0) + 1)}
+                    disabled={guardando || !mesaSeleccionada || !atencion || ((cantidades[producto.id] ?? 0) === 0 && lineas.length >= 4)}
+                  >
+                    Agregar
+                  </button>
+                </article>
+              ))}
+            </section>
           ))}
         </div>
 
@@ -447,7 +510,7 @@ function GestionPedidos({ usuarioId }: GestionPedidosProps) {
             <div className="pedido-linea" key={producto.id}>
               <div>
                 <strong>{producto.nombre}</strong>
-                <span>{soles(centimosProducto(producto) / 100)} c/u · Subtotal {soles(subtotal)}</span>
+                <span>{producto.presentacion ? `Presentación: ${producto.presentacion} · ` : 'Sin presentación · '}{soles(centimosProducto(producto) / 100)} c/u · Subtotal {soles(subtotal)}</span>
               </div>
               <input
                 aria-label={`Cantidad de ${producto.nombre}`}
@@ -472,6 +535,17 @@ function GestionPedidos({ usuarioId }: GestionPedidosProps) {
               </button>
             </div>
           ))}
+
+          <label className="pedido-observaciones">
+            Observaciones para cocina (opcional)
+            <textarea
+              value={observaciones}
+              maxLength={500}
+              disabled={guardando}
+              onChange={(evento) => setObservaciones(evento.target.value)}
+              placeholder="Ej.: sin sal, salsa aparte"
+            />
+          </label>
 
           <div className="pedido-total">
             <strong>Total del pedido</strong>

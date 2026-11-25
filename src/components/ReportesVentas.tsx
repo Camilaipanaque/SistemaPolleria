@@ -207,8 +207,8 @@ function ReportesVentas({ usuarioId }: { usuarioId: string }) {
         <h3>Productos más vendidos</h3>
         {reporte.productos.length === 0 ? <p>No hay productos en ventas verificadas para este rango.</p> : <div className="reporte-tabla-wrap"><table>
           <thead><tr><th>Producto</th><th>Unidades</th><th>Subtotal vendido</th></tr></thead>
-          <tbody>{reporte.productos.slice(0, 10).map((producto) => <tr key={producto.productoId}>
-            <td>{producto.nombre}</td><td>{producto.cantidad}</td><td>{dinero(producto.subtotalCentimos)}</td>
+          <tbody>{reporte.productos.slice(0, 10).map((producto) => <tr key={`${producto.productoId}-${producto.presentacion ?? ''}`}>
+            <td>{producto.nombre}{producto.presentacion && <small className="reporte-presentacion">{producto.presentacion}</small>}</td><td>{producto.cantidad}</td><td>{dinero(producto.subtotalCentimos)}</td>
           </tr>)}</tbody>
         </table></div>}
       </section>

@@ -46,6 +46,37 @@ test('comprueba importes redundantes y conserva documentos históricos solo en s
   assert.ok(validarVenta(legacy).venta)
 })
 
+test('conserva la presentación en líneas validadas para tickets y reportes', () => {
+  const bebida = base()
+  bebida.pedidos[0].items[0] = {
+    productoId: 'limonada', nombre: 'Limonada', presentacion: '500 ml',
+    cantidad: 2, precioUnitarioCentimos: 800, subtotalCentimos: 1600,
+  }
+  bebida.pago.importeCentimos = 1600; bebida.pago.importe = 16
+  bebida.atencion.totalPagadoCentimos = 1600; bebida.atencion.totalCentimos = 1600; bebida.atencion.total = 16
+  bebida.pedidos[0].totalCentimos = 1600; bebida.pedidos[0].total = 16
+  const venta = validarVenta(bebida).venta
+  assert.equal(venta?.lineas[0].presentacion, '500 ml')
+
+  const otraPresentacion = structuredClone(bebida)
+  otraPresentacion.atencionId = 'atencion-2'; otraPresentacion.pagoId = 'pago-2'
+  otraPresentacion.pago.metodo = 'yape'; otraPresentacion.atencion.metodoPago = 'yape'
+  otraPresentacion.atencion.pagoId = 'pago-2'
+  otraPresentacion.pedidos[0].atencionId = 'atencion-2'
+  otraPresentacion.pedidos[0].items[0].presentacion = '1.5 L'
+  const resumen = resumirVentas([venta, validarVenta(otraPresentacion).venta])
+  assert.equal(resumen.productos.length, 2)
+  assert.deepEqual(resumen.productos.map((item) => item.presentacion).sort(), ['1.5 L', '500 ml'])
+})
+
+test('rechaza una presentación inválida sin afectar líneas de ventas históricas', () => {
+  const invalida = base()
+  invalida.pedidos[0].items[0].presentacion = ''
+  assert.equal(validarVenta(invalida).venta, undefined)
+  const historica = base()
+  assert.ok(validarVenta(historica).venta)
+})
+
 test('rechaza precio por cantidad y total de pedido que no cuadran', () => {
   const wrongUnit = base(); wrongUnit.pedidos[0].items[0].precioUnitarioCentimos = 2499
   assert.equal(validarVenta(wrongUnit).venta, undefined)

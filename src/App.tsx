@@ -5,6 +5,7 @@ import { doc, getDoc } from 'firebase/firestore'
 import { auth, db } from './firebase'
 import './App.css'
 import PanelAdmin from './components/PanelAdmin'
+import PanelCocina from './components/PanelCocina'
 
 type Perfil = {
   uid: string
@@ -84,6 +85,14 @@ function App() {
   if (perfil) {
     if (perfil.rol === 'administrador') {
       return <PanelAdmin usuarioId={perfil.uid} nombreUsuario={perfil.nombre} onCerrarSesion={cerrarSesion} />
+    }
+
+    if (perfil.rol === 'cocina') {
+      return <PanelCocina usuarioId={perfil.uid} nombreUsuario={perfil.nombre} onCerrarSesion={cerrarSesion} />
+    }
+
+    if (perfil.rol === 'mozo') {
+      return <PanelCocina usuarioId={perfil.uid} nombreUsuario={perfil.nombre} modo="mozo" onCerrarSesion={cerrarSesion} />
     }
 
     return (

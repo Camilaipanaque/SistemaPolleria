@@ -15,3 +15,4 @@
 .ticket-metodo{margin:12px 0}.ticket-papel footer{text-align:center;border-top:1px dashed #555;padding-top:12px;margin-top:16px;font-size:11px}
 .ticket-error,.ticket-aviso{max-width:500px;margin:24px auto;padding:14px;border-radius:8px;background:#fff;color:#991b1b}
 @media print{.ticket-overlay{position:static;display:block;overflow:visible;padding:0;background:#fff}.ticket-panel{width:72mm;max-width:none;margin:0;padding:0;background:#fff;border-radius:0}.ticket-papel{width:72mm;max-width:none;margin:0;padding:0;box-shadow:none;font-size:10px}.ticket-papel h1{font-size:17px}.ticket-papel table{font-size:9px}.ticket-papel th,.ticket-papel td{padding:4px 1px}.ticket-controles,.ticket-error,.ticket-aviso{display:none!important}}
+.ticket-presentacion{display:block;font-size:.85em;color:#555}

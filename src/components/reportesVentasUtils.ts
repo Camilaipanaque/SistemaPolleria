@@ -6,7 +6,7 @@ export type VentaValidada = {
   totalCentimos: number
   mesaNumero: number | null
   pedidos: number
-  lineas: Array<{ productoId: string; nombre: string; cantidad: number; precioUnitarioCentimos: number; subtotalCentimos: number }>
+  lineas: Array<{ productoId: string; nombre: string; presentacion?: string; cantidad: number; precioUnitarioCentimos: number; subtotalCentimos: number }>
 }
 
 export type IncidenciaReporte = { atencionId: string; pagoId?: string; motivo: string }
@@ -135,15 +135,17 @@ export function validarVenta(input: {
       const unit = importeEnCentimos(item, 'precioUnitarioCentimos', 'precioUnitario')
       const subtotal = importeEnCentimos(item, 'subtotalCentimos', 'subtotal')
       const productoId = typeof item.productoId === 'string' && item.productoId ? item.productoId : nombre
+      const presentacion = item.presentacion
       if (!nombre || !Number.isSafeInteger(cantidad) || Number(cantidad) < 1 ||
           !Number.isSafeInteger(unit) || Number(unit) < 0 || !Number.isSafeInteger(subtotal) ||
-          !Number.isSafeInteger(Number(unit) * Number(cantidad)) || Number(subtotal) !== Number(unit) * Number(cantidad)) {
+          !Number.isSafeInteger(Number(unit) * Number(cantidad)) || Number(subtotal) !== Number(unit) * Number(cantidad) ||
+          (presentacion !== undefined && (typeof presentacion !== 'string' || !presentacion.trim() || presentacion.length > 60))) {
         pedidoValido = false
         continue
       }
       totalLineas += Number(subtotal)
       if (!Number.isSafeInteger(totalLineas)) { pedidoValido = false; continue }
-      lineas.push({ productoId, nombre, cantidad: Number(cantidad),
+      lineas.push({ productoId, nombre, ...(typeof presentacion === 'string' ? { presentacion } : {}), cantidad: Number(cantidad),
         precioUnitarioCentimos: Number(unit), subtotalCentimos: Number(subtotal) })
     }
     const totalPedido = importeEnCentimos(pedido, 'totalCentimos', 'total')
@@ -193,12 +195,12 @@ export function validarPagoAtencion(input: {
 export function resumirVentas(ventas: VentaValidada[]): {
   totalCentimos: number; efectivoCentimos: number; yapeCentimos: number; cantidadVentas: number;
   ventasPorDia: Array<{ fecha: string; cantidadVentas: number; totalCentimos: number; efectivoCentimos: number; yapeCentimos: number }>
-  productos: Array<{ productoId: string; nombre: string; cantidad: number; subtotalCentimos: number }>
+  productos: Array<{ productoId: string; nombre: string; presentacion?: string; cantidad: number; subtotalCentimos: number }>
   incidencias: IncidenciaReporte[]
 } {
   let totalCentimos = 0, efectivoCentimos = 0, yapeCentimos = 0
   const vistos = new Set<string>()
-  const productos = new Map<string, { productoId: string; nombre: string; cantidad: number; subtotalCentimos: number }>()
+  const productos = new Map<string, { productoId: string; nombre: string; presentacion?: string; cantidad: number; subtotalCentimos: number }>()
   const dias = new Map<string, { fecha: string; cantidadVentas: number; totalCentimos: number; efectivoCentimos: number; yapeCentimos: number }>()
   const incidencias: IncidenciaReporte[] = []
   let cantidadVentas = 0
@@ -209,7 +211,8 @@ export function resumirVentas(ventas: VentaValidada[]): {
     }
     const nextTotal = totalCentimos + venta.totalCentimos
     const nextMetodo = venta.metodo === 'efectivo' ? efectivoCentimos + venta.totalCentimos : yapeCentimos + venta.totalCentimos
-    const productosPrevios = venta.lineas.map((linea) => productos.get(linea.productoId))
+    const claveProducto = (linea: VentaValidada['lineas'][number]) => JSON.stringify([linea.productoId, linea.presentacion ?? ''])
+    const productosPrevios = venta.lineas.map((linea) => productos.get(claveProducto(linea)))
     const overflow = !Number.isSafeInteger(nextTotal) || !Number.isSafeInteger(nextMetodo) || venta.lineas.some((linea, i) =>
       !Number.isSafeInteger((productosPrevios[i]?.cantidad ?? 0) + linea.cantidad) ||
       !Number.isSafeInteger((productosPrevios[i]?.subtotalCentimos ?? 0) + linea.subtotalCentimos))
@@ -232,10 +235,12 @@ export function resumirVentas(ventas: VentaValidada[]): {
     else dia.yapeCentimos += venta.totalCentimos
     dias.set(fechaDia, dia)
     for (const linea of venta.lineas) {
-      const current = productos.get(linea.productoId) ?? { productoId: linea.productoId, nombre: linea.nombre, cantidad: 0, subtotalCentimos: 0 }
+      const clave = claveProducto(linea)
+      const current = productos.get(clave) ?? { productoId: linea.productoId, nombre: linea.nombre,
+        ...(linea.presentacion ? { presentacion: linea.presentacion } : {}), cantidad: 0, subtotalCentimos: 0 }
       current.cantidad += linea.cantidad
       current.subtotalCentimos += linea.subtotalCentimos
-      productos.set(linea.productoId, current)
+      productos.set(clave, current)
     }
   }
   return { totalCentimos, efectivoCentimos, yapeCentimos, cantidadVentas,
