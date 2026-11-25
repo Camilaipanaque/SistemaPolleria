@@ -9,6 +9,7 @@ import {
   where,
 } from 'firebase/firestore'
 import { auth, db } from '../firebase'
+import { ordenarLineasPorProductoId } from './pedidosUtils'
 
 type Mesa = {
   id: string
@@ -348,7 +349,7 @@ function GestionPedidos({ usuarioId }: GestionPedidosProps) {
           }
         })
 
-        const itemsOrdenados = items.sort((a, b) => a.productoId.localeCompare(b.productoId))
+        const itemsOrdenados = ordenarLineasPorProductoId(items)
         const totalCentimosPedido = itemsOrdenados.reduce((suma, item) => suma + item.subtotalCentimos, 0)
         if (!Number.isSafeInteger(totalCentimosPedido)) {
           throw new Error('El total del pedido supera el monto admitido.')

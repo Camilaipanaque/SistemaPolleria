@@ -10,6 +10,7 @@ import {
   normalizarPresentacion,
   ProductoDuplicadoError,
 } from '../src/components/productosUtils.ts'
+import { ordenarLineasPorProductoId } from '../src/components/pedidosUtils.ts'
 
 const projectId = 'demo-sistema-polleria'
 let env
@@ -610,6 +611,35 @@ test('pedido con dos productos históricos sin presentación crea comanda y actu
     { productoId: 'gaseosas', nombre: 'Gaseosas', precioUnitarioCentimos: 500, cantidad: 1, subtotalCentimos: 500 },
   ]
   await assertSucceeds(pedidoConComanda(env.authenticatedContext('admin').firestore(), 'pedido-historico-dos-productos', { items }))
+})
+
+test('pedido con IDs reales mixtos usa el mismo orden binario que las reglas', async () => {
+  await env.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore()
+    await setDoc(doc(db, 'productos/hGVwuKtE4XUSgoVuYMBs'), {
+      nombre: '1/4 de pollo', categoria: 'pollos', precio: 18, activo: true,
+    })
+    await setDoc(doc(db, 'productos/NxEvCbYihxkybfBzV7yd'), {
+      nombre: 'gaseosas', categoria: 'bebidas 1/2lt', precio: 5,
+      precioCentimos: 500, activo: true,
+    })
+  })
+
+  const itemsSinOrdenar = [
+    { productoId: 'hGVwuKtE4XUSgoVuYMBs', nombre: '1/4 de pollo', precioUnitarioCentimos: 1800, cantidad: 1, subtotalCentimos: 1800 },
+    { productoId: 'NxEvCbYihxkybfBzV7yd', nombre: 'gaseosas', precioUnitarioCentimos: 500, cantidad: 1, subtotalCentimos: 500 },
+  ]
+  const itemsOrdenLocale = [...itemsSinOrdenar].sort((a, b) => a.productoId.localeCompare(b.productoId))
+  assert.deepEqual(itemsOrdenLocale.map((item) => item.productoId), [
+    'hGVwuKtE4XUSgoVuYMBs', 'NxEvCbYihxkybfBzV7yd',
+  ])
+  await assertFails(pedidoConComanda(env.authenticatedContext('admin').firestore(), 'pedido-orden-locale', { items: itemsOrdenLocale }))
+
+  const items = ordenarLineasPorProductoId(itemsSinOrdenar)
+  assert.deepEqual(items.map((item) => item.productoId), [
+    'NxEvCbYihxkybfBzV7yd', 'hGVwuKtE4XUSgoVuYMBs',
+  ])
+  await assertSucceeds(pedidoConComanda(env.authenticatedContext('admin').firestore(), 'pedido-ids-mixtos-produccion', { items }))
 })
 
 test('resumen de Cocina acepta cuatro productos y rechaza cinco atómicamente', async () => {
