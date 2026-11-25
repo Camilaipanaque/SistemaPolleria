@@ -369,7 +369,8 @@ test('pedido nuevo guarda la presentación del catálogo y conserva línea hist�
 test('la presentación se valida si se envía y se conservan líneas históricas', async () => {
   const db = env.authenticatedContext('admin').firestore()
   const { presentacion: _presentacion, ...sinPresentacion } = lineaLimonada()
-  await assertSucceeds(pedido(db, 'linea-historica-sin-presentacion', {
+  await assertSucceeds(pedido(db, 'linea-historica-sin-presentacion', { items: [lineaPollo()] }))
+  await assertFails(pedido(db, 'presentacion-omitida', {
     items: [sinPresentacion], total: 16, totalCentimos: 1600,
   }))
   await assertFails(pedido(db, 'presentacion-manipulada', {
@@ -591,6 +592,24 @@ test('se aceptan cuatro líneas válidas bajo el presupuesto de reglas', async (
   const items = lineasCatalogo([2, 3, 4])
   items.push(lineaPollo({ cantidad: 1, subtotalCentimos: 2500 }))
   await assertSucceeds(pedido(env.authenticatedContext('admin').firestore(), 'cuatro-lineas', { items }))
+})
+
+test('pedido con dos productos históricos sin presentación crea comanda y actualiza atención', async () => {
+  await env.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore()
+    await setDoc(doc(db, 'productos/cuarto-pollo'), {
+      nombre: '1/4 de pollo', categoria: 'Pollos', precio: 18, activo: true,
+    })
+    await setDoc(doc(db, 'productos/gaseosas'), {
+      nombre: 'Gaseosas', categoria: 'Bebidas', precio: 5, activo: true,
+    })
+  })
+
+  const items = [
+    { productoId: 'cuarto-pollo', nombre: '1/4 de pollo', precioUnitarioCentimos: 1800, cantidad: 1, subtotalCentimos: 1800 },
+    { productoId: 'gaseosas', nombre: 'Gaseosas', precioUnitarioCentimos: 500, cantidad: 1, subtotalCentimos: 500 },
+  ]
+  await assertSucceeds(pedidoConComanda(env.authenticatedContext('admin').firestore(), 'pedido-historico-dos-productos', { items }))
 })
 
 test('resumen de Cocina acepta cuatro productos y rechaza cinco atómicamente', async () => {

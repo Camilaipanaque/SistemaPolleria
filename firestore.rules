@@ -222,7 +222,10 @@ service cloud.firestore {
         && item.keys().hasOnly([
           'productoId', 'nombre', 'presentacion', 'precioUnitarioCentimos', 'cantidad', 'subtotalCentimos'
         ])
-        && (!item.keys().hasAny(['presentacion']) || item.presentacion == producto.presentacion)
+        && (producto.keys().hasAny(['presentacion'])
+          ? item.keys().hasAny(['presentacion'])
+            && item.presentacion == producto.presentacion
+          : !item.keys().hasAny(['presentacion']))
         && precioCentimos is int
         && precioCentimos >= 0
         && precioCentimos <= 10000000000
