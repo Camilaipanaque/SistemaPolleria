@@ -94,6 +94,12 @@ function pedidoConComanda(db, id, options = {}) {
   const items = options.items ?? [lineaPollo()]
   const totalCentimos = items.reduce((sum, item) => sum + item.subtotalCentimos, 0)
   const total = totalCentimos / 100
+  const itemsResumen = options.itemsResumen ?? items.map(({ productoId, nombre, presentacion, cantidad }) => ({
+    productoId, nombre, ...(presentacion ? { presentacion } : {}), cantidad,
+  }))
+  const observacionesResumen = Object.hasOwn(options, 'observacionesResumen')
+    ? options.observacionesResumen
+    : options.observaciones
   return runTransaction(db, async (tx) => {
     const atencionRef = doc(db, 'atenciones/atencion-1')
     const atencion = (await tx.get(atencionRef)).data()
@@ -104,12 +110,10 @@ function pedidoConComanda(db, id, options = {}) {
       items, ...(options.observaciones ? { observaciones: options.observaciones } : {}), total, totalCentimos,
     })
     tx.set(doc(pedidoRef, 'cocina', 'resumen'), {
-      atencionId: 'atencion-1', pedidoId: id, mesaId: 'mesa-1', mesaNumero: 1,
+      atencionId: 'atencion-1', pedidoId: options.resumenPedidoId ?? id, mesaId: 'mesa-1', mesaNumero: 1,
       creadoPor: 'admin', creadoEn: serverTimestamp(), estado: 'recibido',
-      items: items.map(({ productoId, nombre, presentacion, cantidad }) => ({
-        productoId, nombre, ...(presentacion ? { presentacion } : {}), cantidad,
-      })),
-      ...(options.observaciones ? { observaciones: options.observaciones } : {}),
+      items: itemsResumen,
+      ...(observacionesResumen ? { observaciones: observacionesResumen } : {}),
     })
     tx.update(atencionRef, {
       total: atencion.total + total,
@@ -257,6 +261,40 @@ test('dos altas simultáneas con la misma combinación solo registran una', asyn
   assert.equal(clave.data().productoId, catalogo.docs[0].id)
 })
 
+test('clavesProductos no se puede listar y exige administrador y producto existente', async () => {
+  const admin = env.authenticatedContext('admin').firestore()
+  const claveRef = doc(admin, 'clavesProductos/clave-huerfana')
+  await assertSucceeds(getDoc(claveRef))
+  await assertFails(getDocs(collection(admin, 'clavesProductos')))
+  await assertFails(setDoc(claveRef, {
+    productoId: 'producto-inexistente', claveNormalizada: '["producto","extras",""]',
+  }))
+
+  const mozo = env.authenticatedContext('cliente').firestore()
+  await assertFails(getDoc(doc(mozo, 'clavesProductos/clave-huerfana')))
+  await assertFails(setDoc(doc(mozo, 'clavesProductos/clave-no-autorizada'), {
+    productoId: 'pollo', claveNormalizada: '["pollo","pollos",""]',
+  }))
+})
+
+test('editar producto actualiza su reserva y libera la clave anterior en la misma transacción', async () => {
+  const db = env.authenticatedContext('admin').firestore()
+  const anterior = {
+    nombre: 'Gaseosa Marca Z', categoria: 'Bebidas frías', presentacion: '500 ml',
+    precio: 4, precioCentimos: 400, activo: true,
+  }
+  const productoId = await assertSucceeds(guardarProductoUnico(db, anterior, []))
+  const claveAnteriorRef = doc(db, 'clavesProductos', await idClaveProducto(anterior))
+  const productoRef = doc(db, 'productos', productoId)
+  const existente = { id: productoId, ...(await getDoc(productoRef)).data() }
+  const actualizado = { ...anterior, presentacion: '1 litro', precio: 7, precioCentimos: 700 }
+
+  await assertSucceeds(guardarProductoUnico(db, actualizado, [existente], productoId))
+  assert.equal((await getDoc(claveAnteriorRef)).exists(), false)
+  const claveNueva = await assertSucceeds(getDoc(doc(db, 'clavesProductos', await idClaveProducto(actualizado))))
+  assert.equal(claveNueva.data().productoId, productoId)
+})
+
 test('administrador activo puede ejecutar consulta collectionGroup de pagos por fecha', async () => {
   const db = env.authenticatedContext('admin').firestore()
   await assertSucceeds(pedido(db, 'pedido-grupo'))
@@ -328,10 +366,10 @@ test('pedido nuevo guarda la presentación del catálogo y conserva línea hist�
   await assertSucceeds(pedido(db, 'pedido-historico-sin-presentacion'))
 })
 
-test('la línea nueva debe copiar presentación y no admite campos adicionales', async () => {
+test('la presentación se valida si se envía y se conservan líneas históricas', async () => {
   const db = env.authenticatedContext('admin').firestore()
   const { presentacion: _presentacion, ...sinPresentacion } = lineaLimonada()
-  await assertFails(pedido(db, 'presentacion-faltante', {
+  await assertSucceeds(pedido(db, 'linea-historica-sin-presentacion', {
     items: [sinPresentacion], total: 16, totalCentimos: 1600,
   }))
   await assertFails(pedido(db, 'presentacion-manipulada', {
@@ -466,6 +504,26 @@ test('transición con resumen desincronizado se rechaza', async () => {
   await assertFails(cambiarEstadoCocina(env.authenticatedContext('cocinero').firestore(), 'pedido-desincronizado', 'preparando'))
 })
 
+test('el resumen debe coincidir al crear y sus líneas quedan inmutables', async () => {
+  const admin = env.authenticatedContext('admin').firestore()
+  await assertFails(pedidoConComanda(admin, 'comanda-linea-falsa', {
+    itemsResumen: [{ productoId: 'pollo', nombre: 'Pollo', cantidad: 99 }],
+  }))
+  assert.equal((await getDoc(doc(admin, 'atenciones/atencion-1/pedidos/comanda-linea-falsa'))).exists(), false)
+
+  await assertFails(pedidoConComanda(admin, 'comanda-observacion-falsa', {
+    observaciones: 'Sin sal', observacionesResumen: 'Con sal',
+  }))
+  assert.equal((await getDoc(doc(admin, 'atenciones/atencion-1/pedidos/comanda-observacion-falsa'))).exists(), false)
+
+  await assertSucceeds(pedidoConComanda(admin, 'comanda-inmutable'))
+  const resumenRef = doc(admin, 'atenciones/atencion-1/pedidos/comanda-inmutable/cocina/resumen')
+  await assertFails(updateDoc(resumenRef, {
+    items: [{ productoId: 'pollo', nombre: 'Pollo falso', cantidad: 2 }],
+  }))
+  await assertSucceeds(cambiarEstadoCocina(env.authenticatedContext('cocinero').firestore(), 'comanda-inmutable', 'preparando'))
+})
+
 test('precio manipulado contra el catálogo se rechaza', async () => {
   await assertFails(pedido(env.authenticatedContext('admin').firestore(), 'precio-falso', {
     items: [lineaPollo({ precioUnitarioCentimos: 100, subtotalCentimos: 200 })],
@@ -553,6 +611,21 @@ test('total de atención manipulado sin coincidir con el pedido se rechaza', asy
   await assertFails(runTransaction(db, async (tx) => {
     tx.update(ref, { total: 0.01, totalCentimos: 1, ultimoPedidoId: 'fantasma' })
   }))
+})
+
+test('no permite reutilizar un pedido existente para aumentar otra vez el saldo', async () => {
+  const db = env.authenticatedContext('admin').firestore()
+  await assertSucceeds(pedido(db, 'pedido-original'))
+  await assertSucceeds(pedido(db, 'pedido-mas-reciente'))
+  const atencionRef = doc(db, 'atenciones/atencion-1')
+  const antes = (await getDoc(atencionRef)).data()
+
+  await assertFails(updateDoc(atencionRef, {
+    total: 150, totalCentimos: 15000, ultimoPedidoId: 'pedido-original',
+  }))
+  const despues = (await getDoc(atencionRef)).data()
+  assert.equal(despues.totalCentimos, antes.totalCentimos)
+  assert.equal(despues.ultimoPedidoId, 'pedido-mas-reciente')
 })
 
 test('administrador confirma pago Yape, cierra atención y libera mesa atómicamente', async () => {

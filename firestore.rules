@@ -70,6 +70,55 @@ service cloud.firestore {
           || (item.observacion is string && item.observacion.size() <= 300));
     }
 
+    function itemComandaCoincide(itemPedido, itemResumen) {
+      return itemResumen is map
+        && itemResumen.keys().hasAll(['productoId', 'nombre', 'cantidad'])
+        && itemResumen.keys().hasOnly(['productoId', 'nombre', 'presentacion', 'cantidad'])
+        && itemResumen.productoId == itemPedido.productoId
+        && itemResumen.nombre == itemPedido.nombre
+        && itemResumen.cantidad == itemPedido.cantidad
+        && (itemPedido.keys().hasAny(['presentacion'])
+          ? itemResumen.keys().hasAny(['presentacion'])
+            && itemResumen.presentacion == itemPedido.presentacion
+          : !itemResumen.keys().hasAny(['presentacion']))
+        && !itemResumen.keys().hasAny(['observacion']);
+    }
+
+    function itemsComandaCoinciden(itemsPedido, itemsResumen) {
+      return itemsPedido is list
+        && itemsResumen is list
+        && itemsPedido.size() >= 1
+        && itemsPedido.size() <= 4
+        && itemsResumen.size() == itemsPedido.size()
+        && itemComandaCoincide(itemsPedido[0], itemsResumen[0])
+        && (itemsPedido.size() < 2 || itemComandaCoincide(itemsPedido[1], itemsResumen[1]))
+        && (itemsPedido.size() < 3 || itemComandaCoincide(itemsPedido[2], itemsResumen[2]))
+        && (itemsPedido.size() < 4 || itemComandaCoincide(itemsPedido[3], itemsResumen[3]));
+    }
+
+    function comandaVinculadaAlPedido(comanda, pedido, atencionId, pedidoId) {
+      return comanda is map
+        && comanda.keys().hasAll([
+          'atencionId', 'pedidoId', 'mesaId', 'mesaNumero', 'creadoPor',
+          'creadoEn', 'estado', 'items'
+        ])
+        && comanda.keys().hasOnly([
+          'atencionId', 'pedidoId', 'mesaId', 'mesaNumero', 'creadoPor',
+          'creadoEn', 'estado', 'items', 'observaciones'
+        ])
+        && comanda.atencionId == atencionId
+        && comanda.pedidoId == pedidoId
+        && comanda.mesaId == pedido.mesaId
+        && comanda.mesaNumero == pedido.mesaNumero
+        && comanda.creadoPor == pedido.creadoPor
+        && comanda.creadoEn == pedido.creadoEn
+        && itemsComandaCoinciden(pedido.items, comanda.items)
+        && (pedido.keys().hasAny(['observaciones'])
+          ? comanda.keys().hasAny(['observaciones'])
+            && comanda.observaciones == pedido.observaciones
+          : !comanda.keys().hasAny(['observaciones']));
+    }
+
     function comandaValida(data) {
       return data is map
         && data.keys().hasAll([
@@ -100,15 +149,8 @@ service cloud.firestore {
 
     function comandaCreateValida(atencionId, pedidoId) {
       let pedido = getAfter(pedidoPath(atencionId, pedidoId)).data;
-      return comandaValida(request.resource.data)
-        && request.resource.data.atencionId == atencionId
-        && request.resource.data.pedidoId == pedidoId
+      return comandaVinculadaAlPedido(request.resource.data, pedido, atencionId, pedidoId)
         && request.resource.data.estado == 'recibido'
-        && request.resource.data.atencionId == pedido.atencionId
-        && request.resource.data.mesaId == pedido.mesaId
-        && request.resource.data.mesaNumero == pedido.mesaNumero
-        && request.resource.data.creadoPor == pedido.creadoPor
-        && request.resource.data.creadoEn == pedido.creadoEn
         && pedido.estado == 'recibido';
     }
 
@@ -118,6 +160,7 @@ service cloud.firestore {
         && transicionPermitidaPorRol(resource.data.estado, request.resource.data.estado)
         && get(comandaPath(atencionId, pedidoId)).data.estado == resource.data.estado
         && comanda.estado == request.resource.data.estado
+        && comanda.atencionId == atencionId
         && comanda.pedidoId == pedidoId;
     }
 
@@ -126,7 +169,9 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estado'])
         && transicionPermitidaPorRol(resource.data.estado, request.resource.data.estado)
         && get(pedidoPath(atencionId, pedidoId)).data.estado == resource.data.estado
-        && pedido.estado == request.resource.data.estado;
+        && pedido.estado == request.resource.data.estado
+        && resource.data.atencionId == atencionId
+        && resource.data.pedidoId == pedidoId;
     }
 
     function pagoPath(atencionId, pagoId) {
@@ -177,9 +222,7 @@ service cloud.firestore {
         && item.keys().hasOnly([
           'productoId', 'nombre', 'presentacion', 'precioUnitarioCentimos', 'cantidad', 'subtotalCentimos'
         ])
-        && (producto.keys().hasAny(['presentacion'])
-          ? item.presentacion == producto.presentacion
-          : !item.keys().hasAny(['presentacion']))
+        && (!item.keys().hasAny(['presentacion']) || item.presentacion == producto.presentacion)
         && precioCentimos is int
         && precioCentimos >= 0
         && precioCentimos <= 10000000000
@@ -256,15 +299,14 @@ service cloud.firestore {
       let totalAnterior = atencionCentimos(actual);
       return actual.estado == 'abierta'
         && totalAnterior is int
+        && totalAnterior <= 9000000000000000000 - data.totalCentimos
         && actual.mesaId == data.mesaId
         && actual.mesaNumero == data.mesaNumero
         && despues.estado == 'abierta'
         && despues.mesaId == data.mesaId
         && despues.mesaNumero == data.mesaNumero
         && despues.ultimoPedidoId == pedidoId
-        && despues.totalCentimos is int
-        && despues.totalCentimos > totalAnterior
-        && despues.totalCentimos <= 9000000000000000000
+        && despues.totalCentimos == totalAnterior + data.totalCentimos
         && despues.total == despues.totalCentimos / 100
         && mesa.estado == 'ocupada'
         && mesa.atencionActivaId == atencionId
@@ -272,14 +314,26 @@ service cloud.firestore {
     }
 
     function atencionActualizacionValida(atencionId) {
+      let pedido = pedidoDespues(atencionId, request.resource.data.ultimoPedidoId).data;
       let mesa = mesaDespues(resource.data.mesaId).data;
       let totalAnterior = atencionCentimos(resource.data);
-      let pedido = getAfter(pedidoPath(atencionId, request.resource.data.ultimoPedidoId)).data;
       let totalPedido = pedido.totalCentimos;
       return totalAnterior is int
+        && (!resource.data.keys().hasAny(['ultimoPedidoId'])
+          || request.resource.data.ultimoPedidoId != resource.data.ultimoPedidoId)
         && totalPedido is int
         && totalAnterior <= 9000000000000000000 - totalPedido
+        && pedido.atencionId == atencionId
+        && pedido.mesaId == resource.data.mesaId
+        && pedido.mesaNumero == resource.data.mesaNumero
+        && pedido.creadoPor == request.auth.uid
+        && pedido.estado == 'recibido'
+        && pedido.creadoEn == request.time
         && request.resource.data.totalCentimos == totalAnterior + totalPedido
+        && pedido.total == pedido.totalCentimos / 100
+        && pedido.items is list
+        && pedido.items.size() >= 1
+        && pedido.items.size() <= 4
         && mesa.estado == 'ocupada'
         && mesa.atencionActivaId == atencionId
         && mesa.numero == resource.data.mesaNumero;
@@ -481,6 +535,7 @@ service cloud.firestore {
             && comandaId == 'resumen'
             && comandaCreateValida(atencionId, pedidoId);
           allow update: if (isAdmin() || isCocina() || isMozo())
+            && comandaId == 'resumen'
             && estadoComandaActualizacionValida(atencionId, pedidoId);
           allow delete: if false;
         }

@@ -30,7 +30,7 @@ Aplicación web académica para apoyar la operación diaria de una pollería. Es
 - El rol de mozo puede atender los pedidos listos, pero todavía no cuenta con un flujo completo para abrir mesas y registrar pedidos desde su propio panel.
 - El rol de cajero está reconocido al iniciar sesión, pero todavía no tiene un panel propio para operar Caja.
 - El catálogo y la selección de productos se cargan sin paginación. El README previo recomienda evaluar paginación por cursor cuando el catálogo se acerque a 500 productos o la carga empiece a afectar el rendimiento.
-- `auditoria.json` es un reporte guardado, no una auditoría en tiempo real. Ese reporte señala cuatro vulnerabilidades altas en la cadena de dependencias de Firebase/Firestore y `@grpc/grpc-js`. Hay un override de `@grpc/grpc-js` en `package.json`, pero se debe regenerar la auditoría con el lockfile actual para confirmar qué avisos siguen vigentes y planificar su corrección. No se actualizaron dependencias como parte de esta entrega.
+- `auditoria.json` es un reporte guardado, no una auditoría en tiempo real. El reporte histórico señalaba cuatro vulnerabilidades altas en Firebase/Firestore y `@grpc/grpc-js`. La última ejecución de `npm audit` (25 de noviembre de 2026) encontró 14 vulnerabilidades moderadas y ninguna alta o crítica en el lockfile actual; la mayoría son dependencias transitivas de herramientas de desarrollo. `npm audit` terminó con código 1 por esos avisos. No se actualizaron dependencias; revisar y priorizar las correcciones antes de producción.
 - Antes de un uso real, revisar y volver a probar las reglas de Firestore y las dependencias con la auditoría actualizada. La configuración de cliente de Firebase no sustituye las reglas de seguridad del servidor.
 
 ## Requisitos
@@ -84,3 +84,16 @@ npm run test:rules
 ## Estado de publicación
 
 La rama `entrega-academica` se prepara para revisión académica y no se fusiona con `main`. La URL de Firebase indicada arriba corresponde al sitio publicado existente. Esta entrega no realiza despliegues ni cambios en datos de producción.
+
+## Publicación en GitHub Pages
+
+El workflow `.github/workflows/pages.yml` se ejecuta al actualizar `entrega-academica`. Compila el sitio en `/SistemaPolleria/` solo para Pages. `VITE_BASE_PATH` usa `/` de forma predeterminada, por lo que las compilaciones normales destinadas a Firebase Hosting conservan sus rutas raíz. El workflow publica únicamente el contenido de `dist` en GitHub Pages; no despliega Firebase ni sus reglas.
+
+Antes de habilitar el workflow:
+
+1. En **Settings → Pages**, selecciona **GitHub Actions** como fuente de publicación.
+2. En **Settings → Secrets and variables → Actions → Variables**, crea estas variables de repositorio con los valores de la configuración web de Firebase: `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_STORAGE_BUCKET`, `VITE_FIREBASE_MESSAGING_SENDER_ID` y `VITE_FIREBASE_APP_ID`. El workflow falla antes de compilar si falta alguna.
+3. En Firebase Authentication, autoriza el dominio `camilaipanaque.github.io` para que el acceso funcione desde GitHub Pages.
+4. Revisa las reglas desplegadas de Firestore antes de publicar. La versión activa de producción no coincide con las reglas de esta rama y no incluye el permiso para `clavesProductos` usado por la gestión de productos de esta rama; registrar o editar productos podría fallar hasta que esa diferencia se revise y se resuelva de forma controlada.
+
+La configuración web de Firebase se compila dentro de JavaScript que cualquier visitante puede descargar. Firebase indica que las API keys web identifican el proyecto y no sustituyen la autorización: protege los datos con reglas de Firestore y revisa las restricciones de las API keys. No coloques contraseñas, claves de cuenta de servicio ni tokens en estas variables. El archivo `.env.local` continúa excluido de Git.
